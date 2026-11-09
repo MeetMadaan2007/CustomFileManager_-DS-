@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <fstream>
 using namespace std;
 
 class FileNode{
@@ -36,7 +37,7 @@ public:
         currentDir = root;
     }
 
-    // creating new directory AI nhi h
+    // creating new directory
     void mkdir(string dirName){
         if(currentDir->children.contains(dirName)){
             cout << "mkdir :  cannot create directory " << dirName << " : File Already Exists";
@@ -143,6 +144,135 @@ public:
 
         cout << currentDir->children[fileName]->content <<'\n';
     }
+
+    string escapeNewlines(const string& str) {
+        string result = "";
+        for (char c : str) {
+            if (c == '\n') {
+                result += "\\n";
+            } 
+            else {
+                result += c;
+            }
+        }
+        return result;
+    }
+
+    void saveHelper(FileNode * node, string path, ofstream& outFile){
+        if(path != "/"){ 
+            path += "/";
+        } 
+        for(auto i :node->children){
+            string childPath = path + i.first;
+            //write to file path + fileName;
+            if(i.second->isDirectory){
+                outFile << "D "  << childPath << '\n';
+                saveHelper(i.second, childPath,outFile);    
+            }    
+            else{
+                outFile << "F " << childPath << " " << escapeNewlines(i.second->content) << '\n';
+            }
+        }
+    }
+
+    void save(){
+        ofstream outFile("data.txt");
+        if(!outFile.is_open()){
+            cout << "Could not open the file\n";
+            return;
+        }
+        saveHelper(root, "", outFile);
+
+        outFile.close();
+        cout << "Saved Successfully\n";
+    }
+
+    string unescapeNewLines(const string & content){
+        string result = "";
+        for(int i = 0; i< content.size() ; i++){
+            if(content[i] == '\\' && i < content.size()-1 && content[i+1] == 'n'){
+                result += '\n';
+                i++;
+            }
+            else{
+                result+= content[i];
+            }
+        }
+        return result;
+    }
+
+    vector <string> splitPaths(const string & path){
+        vector <string> parts;
+        string s = "";
+        for(int i =1; i < path.size(); i++){
+            if(path[i] == '/' ){
+                parts.push_back(s);
+                s = "";
+            }
+            else s+= path[i];
+        }
+        if(!s.empty()){
+            parts.push_back(s);
+        }
+        return parts;
+    }
+
+    void load(){
+        ifstream inFile("data.txt");
+        if(!inFile.is_open()){
+            cout << "Could not open the file\n";
+            return;
+        }
+        string type, path;
+        while(inFile >> type >> path){
+            string content = "";
+            if(type == "F"){
+                getline(inFile , content);
+                if(!content.empty() && content[0] == ' '){
+                    content = content.substr(1);
+                }
+                content = unescapeNewLines(content);
+            }
+            vector <string> paths = splitPaths(path);
+            FileNode *temp = root;
+            for(int i = 0; i < paths.size() ; i++){
+                if(temp->children.contains(paths[i])){
+                    temp =temp->children[paths[i]];
+                }
+                else{
+                    if(i != paths.size()-1 || type == "D"){
+                        currentDir =temp;
+                        mkdir(paths[i]);
+                        temp = temp->children[paths[i]];
+                    }
+                    else{
+                        currentDir =temp;
+                        touch(paths[i]);
+                        temp->children[paths[i]]->content = content;
+                    }
+                }
+            }
+        }
+        currentDir = root;
+    }
+
+    void treeHelper(FileNode * node, int depth){
+        for(auto i :node->children){
+            for(int i = 0; i < depth ; i++){
+                cout << '\t';
+            }
+            cout << "|-- " << i.first << '\n';
+            if(i.second->isDirectory){
+                treeHelper(i.second, depth+1);
+            }
+        }
+    }
+
+    void tree(){
+        cout << "/\n";
+        treeHelper(root, 0);
+    }
+
 };
 
 int main(){
