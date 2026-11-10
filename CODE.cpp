@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <fstream>
+#include <deque>
 using namespace std;
 
 class FileNode{
@@ -31,10 +32,16 @@ class FileSystem{
 private:
     FileNode *root;
     FileNode *currentDir;
+    deque<string> commandHistory;
 public:
     FileSystem(){
         root = new FileNode("/", true);
         currentDir = root;
+        root->children[".trash"] = new FileNode(".trash", true, root);
+    }
+
+    ~FileSystem(){
+        delete root;
     }
 
     // creating new directory
@@ -59,6 +66,21 @@ public:
     void ls(){
         for(auto p :currentDir->children){
             cout << p.first << "\n";
+        }
+    }
+
+    void lsWildcard(string pattern){
+        string ext = "";
+        if(!pattern.empty() && pattern[0] == '*'){
+            ext = pattern.substr(1);
+        }
+        else{
+            ext = pattern;
+        }
+        for(auto p : currentDir->children){
+            if(p.first.size() >= ext.size() && p.first.substr(p.first.size() - ext.size()) == ext){
+                cout << p.first << "\n";
+            }
         }
     }
 
@@ -106,6 +128,39 @@ public:
         FileNode *temp = currentDir->children[targetName];
         currentDir->children.erase(targetName);
         delete temp;
+    }
+
+    void trash(string targetName){
+        if(!currentDir->children.contains(targetName)){
+            cout << "File : " << targetName << " Doesn't exist\n";
+            return;
+        }
+
+        if(root->children[".trash"]->children.contains(targetName)){
+            delete root->children[".trash"]->children[targetName];
+        }
+
+        FileNode *temp = currentDir->children[targetName];
+        root->children[".trash"]->children[targetName] = temp;
+        temp->parent = root->children[".trash"]; 
+        currentDir->children.erase(targetName);
+    }
+
+    void restore(string targetName){
+        if(!root->children[".trash"]->children.contains(targetName)){
+            cout << "File : " << targetName << " not found in trash\n";
+            return;
+        }
+
+        if(currentDir->children.contains(targetName)){
+            cout << "Cannot restore: '" << targetName << "' already exists in this directory.\n";
+            return;
+        }
+        
+        FileNode *temp = root->children[".trash"]->children[targetName];
+        currentDir->children[targetName] = temp;
+        temp->parent = currentDir;
+        root->children[".trash"]->children.erase(targetName);
     }
 
     void write(string fileName, const string & text){
@@ -273,8 +328,92 @@ public:
         treeHelper(root, 0);
     }
 
+    void history(){
+        for(int i = 0; i < commandHistory.size(); i++){
+            cout << i + 1 << "  " << commandHistory[i] << '\n';
+        }
+    }
+
+    void clearScreen(){
+        #ifdef _WIN32
+            system("cls");
+        #else
+            system("clear");
+        #endif
+    }
+
+    void run(){
+        load();
+        string input;
+        while(true){
+            cout << "nanofs> "; 
+            getline(cin, input);
+
+            if(input.empty()) continue;
+
+            commandHistory.push_back(input);
+            if(commandHistory.size() > 50){
+                commandHistory.pop_front();
+            }
+
+            if(input == "exit"){
+                save();
+                break;
+            }
+            if(input == "history"){
+                history();
+                continue;
+            }
+            if(input == "clear"){
+                clearScreen();
+                continue;
+            }
+            if(input == "ls"){
+                ls();
+                continue;
+            }
+            if(input == "pwd"){
+                pwd();
+                continue;
+            }
+            if(input == "tree"){
+                tree();
+                continue;
+            }
+            
+            int spacePos = input.find(' ');
+            if(spacePos != string::npos){
+                string cmd = input.substr(0, spacePos);
+                string arg = input.substr(spacePos + 1);
+
+                if(cmd == "mkdir") mkdir(arg);
+                else if(cmd == "touch") touch(arg);
+                else if(cmd == "cd") cd(arg);
+                else if(cmd == "rm") rm(arg);
+                else if(cmd == "cat") cat(arg);
+                else if(cmd == "empty") empty(arg);
+                else if(cmd == "write"){
+                    int secondSpace = arg.find(' ');
+                    if(secondSpace != string::npos){
+                        write(arg.substr(0, secondSpace), arg.substr(secondSpace + 1));
+                    } else {
+                        cout << "Usage: write <filename> <text>\n";
+                    }
+                }
+                else if(cmd == "trash") trash(arg);
+                else if(cmd == "restore") restore(arg);
+                else if(cmd == "ls") lsWildcard(arg);
+            }
+            else if(!input.empty()){
+                cout << "Command not recognized.\n";
+            }
+        }
+    }
+
 };
 
 int main(){
-
+    FileSystem fs;
+    fs.run();
+    return 0;
 }
