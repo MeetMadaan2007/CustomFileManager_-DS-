@@ -9,10 +9,17 @@
     #include <chrono>//allowing the compiler to understand exact time measurements like milliseconds.
     using namespace std;
     // 2)
-    const string BLUE = "\033[1;34m";
-    const string GREEN = "\033[0;32m";
-    const string CYAN = "\033[1;36m";
-    const string RESET = "\033[0m";
+    struct Theme
+    {
+        string name;
+        string dirColor;
+        string fileColor;
+        string accentColor;
+        string promptColor;
+        string reset;
+    };
+
+
     void bootSequence()
     {
     // Just removing everything else from the screen
@@ -101,6 +108,8 @@
         FileNode *root;
         FileNode *currentDir;
         deque<string> commandHistory;
+        unordered_map<string, Theme> themes;
+        Theme currentTheme;
 
     FileNode *resolvePath(const string &path)
         {
@@ -252,16 +261,18 @@
             root = new FileNode("/", true);
             currentDir = root;
             root->children[".trash"] = new FileNode(".trash", true, root);
+            themes["default"] = {"default", "\033[1;34m", "\033[0;32m", "\033[1;36m", "\033[0;32m", "\033[0m"};
+            themes["matrix"] = {"matrix", "\033[1;32m", "\033[0;32m", "\033[1;32m", "\033[1;32m", "\033[0m"};
+            themes["cyberpunk"] = {"cyberpunk", "\033[1;35m", "\033[1;36m", "\033[1;33m", "\033[1;35m", "\033[0m"};
+            themes["amber"] = {"amber", "\033[1;33m", "\033[0;33m", "\033[1;31m", "\033[1;33m", "\033[0m"};
+            themes["ocean"] = {"ocean", "\033[1;36m", "\033[1;34m", "\033[1;37m", "\033[1;36m", "\033[0m"};
+            currentTheme = themes["default"];
         }
 
         ~FileSystem()
         {
             delete root;
         }
-
-        
-
-        
 
         // creating new directory
         void mkdir(string dirPath)
@@ -310,15 +321,15 @@
             }
             if (!target->isDirectory)
             {
-                cout << GREEN << target->name << RESET << "\n";
+                cout << currentTheme.fileColor << target->name << currentTheme.reset << "\n";
                 return;
             }
             for (auto const &p : target->children)
             {
                 if (p.second->isDirectory)
-                    cout << BLUE << p.first << RESET << "\n";
+                    cout << currentTheme.dirColor << p.first << currentTheme.reset << "\n";
                 else
-                    cout << GREEN << p.first << RESET << "\n";
+                    cout << currentTheme.fileColor << p.first << currentTheme.reset << "\n";
             }
         }
     
@@ -338,9 +349,9 @@
                 if (p.first.size() >= ext.size() && p.first.substr(p.first.size() - ext.size()) == ext)
                 {
                     if (p.second->isDirectory)
-                        cout << BLUE << p.first << RESET << "\n";
+                        cout << currentTheme.dirColor << p.first << currentTheme.reset << "\n";
                     else
-                        cout << GREEN << p.first << RESET << "\n";
+                        cout << currentTheme.fileColor << p.first << currentTheme.reset << "\n";
                 }
             }
         }
@@ -654,12 +665,12 @@
                 }
                 if (i.second->isDirectory)
                 {
-                    cout << "|-- " << BLUE << i.first << RESET << '\n';
+                    cout << "|-- " << currentTheme.dirColor << i.first << currentTheme.reset << '\n';
                     treeHelper(i.second, depth + 1);
                 }
                 else
                 {
-                    cout << "|-- " << GREEN << i.first << RESET << '\n';
+                    cout << "|-- " << currentTheme.fileColor << i.first << currentTheme.reset << '\n';
                 }
             }
         }
@@ -702,7 +713,7 @@
                 {
                     if (child->content.find(keyword) != string::npos)
                     {
-                        cout << GREEN << nextPath << RESET << "\n";
+                        cout << currentTheme.fileColor << nextPath << currentTheme.reset << "\n";
                         found = true;
                     }
                 }
@@ -745,22 +756,16 @@
             pathFinder(currentDir, currentPath);
 
             cout << "\n";
-            cout << CYAN << "   _  __              ___  ___ " << RESET << "  " << GREEN << "user@nanofs" << RESET << "\n";
-            cout << CYAN << "  / |/ /__ ____  ___ / _/ / __/" << RESET << "  " << "--------------------" << "\n";
-            cout << CYAN << " /    / _ `/ _ \\/ _ \\ _/_ \\ \\  " << RESET << "  " << BLUE << "FS: " << RESET << "NanoFS v1.0\n";
-            cout << CYAN << "/_/|_/\\_,_/_//_/\\___/_/ /___/  " << RESET << "  " << BLUE << "Path: " << RESET << currentPath << "\n";
-            cout << CYAN << "                               " << RESET << "  " << BLUE << "Directories: " << RESET << dirCount << "\n";
-            cout << CYAN << "                               " << RESET << "  " << BLUE << "Files: " << RESET << fileCount << "\n";
-            cout << CYAN << "                               " << RESET << "  " << BLUE << "Used Space: " << RESET << totalBytes << " Bytes\n";
+            cout << currentTheme.accentColor << "   _  __              ___  ___ " << currentTheme.reset << "  " << currentTheme.promptColor << "user@nanofs" << currentTheme.reset << "\n";
+            cout << currentTheme.accentColor << "  / |/ /__ ____  ___ / _/ / __/" << currentTheme.reset << "  " << "--------------------" << "\n";
+            cout << currentTheme.accentColor << " /    / _ `/ _ \\/ _ \\ _/_ \\ \\  " << currentTheme.reset << "  " << currentTheme.dirColor << "FS: " << currentTheme.reset << "NanoFS v1.0\n";
+            cout << currentTheme.accentColor << "/_/|_/\\_,_/_//_/\\___/_/ /___/  " << currentTheme.reset << "  " << currentTheme.dirColor << "Path: " << currentTheme.reset << currentPath << "\n";
+            cout << currentTheme.accentColor << "                               " << currentTheme.reset << "  " << currentTheme.dirColor << "Directories: " << currentTheme.reset << dirCount << "\n";
+            cout << currentTheme.accentColor << "                               " << currentTheme.reset << "  " << currentTheme.dirColor << "Files: " << currentTheme.reset << fileCount << "\n";
+            cout << currentTheme.accentColor << "                               " << currentTheme.reset << "  " << currentTheme.dirColor << "Used Space: " << currentTheme.reset << totalBytes << " Bytes\n";
             cout << "\n";
         }
 
-        
-
-
-        
-
-        
 
         void cpSingle(const string &srcPath, const string &destPath)
         {
@@ -799,7 +804,7 @@
 
                 string createdPath = "";
                 pathFinder(cloned, createdPath);
-                cout << GREEN << "Copied '" << srcPath << "' -> '" << createdPath << "'" << RESET << "\n";
+                cout << currentTheme.fileColor << "Copied '" << srcPath << "' -> '" << createdPath << "'" << currentTheme.reset << "\n";
             }
             else
             {
@@ -826,7 +831,7 @@
 
                 string createdPath = "";
                 pathFinder(cloned, createdPath);
-                cout << GREEN << "Copied '" << srcPath << "' -> '" << createdPath << "'" << RESET << "\n";
+                cout << currentTheme.fileColor << "Copied '" << srcPath << "' -> '" << createdPath << "'" << currentTheme.reset << "\n";
             }
         }
 
@@ -896,7 +901,7 @@
 
                 string newFullPath = "";
                 pathFinder(srcNode, newFullPath);
-                cout << GREEN << "Moved '" << oldFullPath << "' -> '" << newFullPath << "'" << RESET << "\n";
+                cout << currentTheme.fileColor << "Moved '" << oldFullPath << "' -> '" << newFullPath << "'" << currentTheme.reset << "\n";
             }
             else
             {
@@ -925,7 +930,7 @@
 
                 string newFullPath = "";
                 pathFinder(srcNode, newFullPath);
-                cout << GREEN << "Moved/Renamed '" << oldFullPath << "' -> '" << newFullPath << "'" << RESET << "\n";
+                cout << currentTheme.fileColor << "Moved/Renamed '" << oldFullPath << "' -> '" << newFullPath << "'" << currentTheme.reset << "\n";
             }
         }
 
@@ -1019,10 +1024,10 @@
             vector<string> matches;
             trieCollectWords(curr, prefix, matches);
 
-            cout << CYAN << "Suggestions for '" << prefix << "':" << RESET << "\n";
+            cout << currentTheme.accentColor << "Suggestions for '" << prefix << "':" << currentTheme.reset << "\n";
             for (const string &m : matches)
             {
-                cout << "  -> " << GREEN << m << RESET << "\n";
+                cout << "  -> " << currentTheme.fileColor << m << currentTheme.reset << "\n";
             }
 
             delete tRoot; 
@@ -1124,6 +1129,36 @@
                 cout << target->content.length() << " Bytes " << targetPath << "\n";
             }
         }
+
+        void showThemes()
+        {       
+            cout << "\n" << currentTheme.accentColor << "Available Themes:" << currentTheme.reset << "\n";
+            for (auto const &p : themes)
+            {
+                Theme t = p.second;
+                cout << "  - " << t.accentColor << t.name << t.reset;
+                cout << "  [" << t.dirColor << "DIR" << t.reset << " | " << t.fileColor << "FILE" << t.reset << "]";
+                if (t.name == currentTheme.name)
+                {
+                    cout << " (active)";
+                }
+                cout << "\n";
+            }
+            cout << "\nUsage: theme <name>\n\n";
+        }
+
+        void setTheme(const string &themeName)
+        {
+            if (!themes.contains(themeName))
+            {
+                cout << "Theme '" << themeName << "' not found.\n";
+                showThemes();
+                return;
+            }
+            currentTheme = themes[themeName];
+            cout << currentTheme.accentColor << "Theme switched to: " << currentTheme.name << currentTheme.reset << "\n";
+        }
+
         void run()
         {
             load();
@@ -1132,7 +1167,7 @@
             {
                 string currentPath = "";
                 pathFinder(currentDir, currentPath);
-                cout << GREEN << "user@nanofs:" << BLUE << currentPath << RESET << "$ ";
+                cout << currentTheme.promptColor << "user@nanofs:" << currentTheme.dirColor << currentPath << currentTheme.reset << "$ ";
                 getline(cin, input);
         
                 if (input.empty())
@@ -1179,6 +1214,11 @@
                     nanofetch();
                     continue;
                 }
+                if (input == "theme")
+                {
+                    showThemes();
+                    continue;
+                }
 
                 size_t spacePos = input.find(' ');
                 if (spacePos != string::npos)
@@ -1198,6 +1238,8 @@
                         cat(arg);
                     else if (cmd == "empty")
                         empty(arg);
+                    else if (cmd == "theme")
+                        setTheme(arg);
                     else if (cmd == "write")
                     {
                         size_t secondSpace = arg.find(' ');
