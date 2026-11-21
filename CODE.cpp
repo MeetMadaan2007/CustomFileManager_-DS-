@@ -400,7 +400,7 @@ public:
         }
     }
 
-    void cd(string dirPath)
+    void cd(string dirPath = "/")
     {
         FileNode *target = resolvePath(dirPath);
         if (target == nullptr || !target->isDirectory)
@@ -1287,6 +1287,11 @@ public:
             if (commandHistory.size() > 50)
             {
                 commandHistory.pop_front();
+            }
+            if (input == "cd")
+            {
+                cd("/");
+                continue;
             }
 
             if (input == "exit")
