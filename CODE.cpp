@@ -7,8 +7,6 @@
     #include <deque>
     #include <thread>//allowing the program to explicitly control its own execution state.
     #include <chrono>//allowing the compiler to understand exact time measurements like milliseconds.
-    #include <sstream>
-    #include <stack>
     using namespace std;
     // 2)
     const string BLUE = "\033[1;34m";
@@ -68,21 +66,6 @@
         }
     };
 
-    struct HashEntry
-    {
-        unsigned long long hashKey;
-        string filePath;
-        FileNode *nodeRef;
-        HashEntry *next;
-
-        HashEntry(unsigned long long key, string path, FileNode *node)
-        {
-            hashKey = key;
-            filePath = path;
-            nodeRef = node;
-            next = nullptr;
-        }
-    };
 
     struct TrieNode
     {
@@ -110,25 +93,6 @@
         }
     };
 
-    struct Transaction
-    {
-        string opType;        
-        string targetPath;    
-        string oldPath;       
-        string oldContent;    
-        string newContent;    
-        FileNode *nodeBackup; 
-
-        Transaction(string op, string tPath, string oPath = "", string oCont = "", string nCont = "", FileNode *backup = nullptr)
-        {
-            opType = op;
-            targetPath = tPath;
-            oldPath = oPath;
-            oldContent = oCont;
-            newContent = nCont;
-            nodeBackup = backup;
-        }
-    };
 
     // implementation of MKDIR
     class FileSystem
@@ -137,35 +101,42 @@
         FileNode *root;
         FileNode *currentDir;
         deque<string> commandHistory;
-        stack<Transaction> undoStack;
-        stack<Transaction> redoStack;
-        bool isReplaying = false;
 
-    public:
-        FileSystem()
+    FileNode *resolvePath(const string &path)
         {
-            root = new FileNode("/", true);
-            currentDir = root;
-            root->children[".trash"] = new FileNode(".trash", true, root);
-        }
+            if (path.empty())
+                return nullptr;
+            if (path == "/")
+                return root;
 
-        void clearTransactionStack(stack<Transaction> &st)
-        {
-            while (!st.empty())
+            FileNode *curr = (path[0] == '/') ? root : currentDir;
+            size_t i = (path[0] == '/') ? 1 : 0;
+
+            while (i < path.size())
             {
-                if (st.top().nodeBackup != nullptr)
+                string part = "";
+                while (i < path.size() && path[i] != '/')
                 {
-                    delete st.top().nodeBackup;
+                    part += path[i];
+                    i++;
                 }
-                st.pop();
-            }
-        }
+                i++;
 
-        ~FileSystem()
-        {
-            clearTransactionStack(undoStack);
-            clearTransactionStack(redoStack);
-            delete root;
+                if (part.empty() || part == ".")
+                    continue;
+                if (part == "..")
+                {
+                    if (curr->parent != nullptr)
+                        curr = curr->parent;
+                }
+                else
+                {
+                    if (!curr->isDirectory || !curr->children.contains(part))
+                        return nullptr;
+                    curr = curr->children[part];
+                }
+            }
+            return curr;
         }
 
         bool resolveParentAndName(const string &rawPath, FileNode *&parentOut, string &nameOut)
@@ -234,6 +205,64 @@
             return false;
         }
 
+        FileNode *cloneNode(FileNode *src, FileNode *newParent)
+        {
+            FileNode *copy = new FileNode(src->name, src->isDirectory, newParent);
+            copy->content = src->content;
+
+            for (auto const &p : src->children)
+            {
+                copy->children[p.first] = cloneNode(p.second, copy);
+            }
+            return copy;
+        }
+
+        vector<string> splitArgs(const string &str)
+        {
+            vector<string> tokens;
+            stringstream ss(str);
+            string word;
+            while (ss >> word)
+            {
+                tokens.push_back(word);
+            }
+            return tokens;
+        }
+
+        void trieInsert(TrieNode *tRoot, const string &word)
+        {
+            TrieNode *curr = tRoot;
+            for (char c : word)
+            {
+                unsigned char idx = static_cast<unsigned char>(c);
+                if (idx >= 128)
+                    continue;
+                if (curr->children[idx] == nullptr)
+                {
+                    curr->children[idx] = new TrieNode();
+                }
+                curr = curr->children[idx];
+            }
+            curr->isEndOfWord = true;
+        }
+
+    public:
+        FileSystem()
+        {
+            root = new FileNode("/", true);
+            currentDir = root;
+            root->children[".trash"] = new FileNode(".trash", true, root);
+        }
+
+        ~FileSystem()
+        {
+            delete root;
+        }
+
+        
+
+        
+
         // creating new directory
         void mkdir(string dirPath)
         {
@@ -251,12 +280,6 @@
             }
             FileNode *newDir = new FileNode(dirName, true, parentDir);
             parentDir->children[dirName] = newDir;
-            if (!isReplaying)
-            {
-                string fullPath = "";
-                pathFinder(newDir, fullPath);
-                recordTransaction(Transaction("CREATE", fullPath, "", "", "", cloneNode(newDir, nullptr)));
-            }
         }
 
         void touch(string filePath)
@@ -275,12 +298,6 @@
             }
             FileNode *newFile = new FileNode(fileName, false, parentDir);
             parentDir->children[fileName] = newFile;
-            if (!isReplaying)
-            {
-                string fullPath = "";
-                pathFinder(parentDir->children[fileName], fullPath);
-                recordTransaction(Transaction("CREATE", fullPath, "", "", "", cloneNode(parentDir->children[fileName], nullptr)));
-            }
         }
 
         void ls(string path = ".")
@@ -382,9 +399,6 @@
                 cout << "Cannot remove current or parent working directory\n";
                 return;
             }
-            string fullPath = "";
-            pathFinder(target, fullPath);
-            recordTransaction(Transaction("DELETE", fullPath, "", "", "", cloneNode(target, nullptr)));
             target->parent->children.erase(target->name);
             delete target;
         }
@@ -452,12 +466,8 @@
                 cout << filePath << " is a Directory!\n";
                 return;
             }
-            string oldCont = target->content;
-            string fullPath = "";
-            pathFinder(target, fullPath);
 
             target->content += (text + "\n");
-            recordTransaction(Transaction("MODIFY", fullPath, "", oldCont, target->content));
         }
 
         void empty(string filePath)
@@ -473,12 +483,8 @@
                 cout << filePath << " is a Directory!\n";
                 return;
             }
-            string oldCont = target->content;
-            string fullPath = "";
-            pathFinder(target, fullPath);
 
             target->content = "";
-            recordTransaction(Transaction("MODIFY", fullPath, "", oldCont, ""));
         }
 
         void cat(string filePath)
@@ -597,7 +603,6 @@
                 cout << "Could not open the file\n";
                 return;
             }
-            isReplaying = true;
             string type, path;
             while (inFile >> type >> path)
             {
@@ -637,7 +642,6 @@
                 }
             }
             currentDir = root;
-            isReplaying = false;
         }
 
         void treeHelper(FileNode *node, int depth)
@@ -751,115 +755,12 @@
             cout << "\n";
         }
 
-        FileNode *resolvePath(const string &path)
-        {
-            if (path.empty())
-                return nullptr;
-            if (path == "/")
-                return root;
+        
 
-            FileNode *curr = (path[0] == '/') ? root : currentDir;
-            int i = (path[0] == '/') ? 1 : 0;
 
-            while (i < path.size())
-            {
-                string part = "";
-                while (i < path.size() && path[i] != '/')
-                {
-                    part += path[i];
-                    i++;
-                }
-                i++;
+        
 
-                if (part.empty() || part == ".")
-                    continue;
-                if (part == "..")
-                {
-                    if (curr->parent != nullptr)
-                        curr = curr->parent;
-                }
-                else
-                {
-                    if (!curr->isDirectory || !curr->children.contains(part))
-                        return nullptr;
-                    curr = curr->children[part];
-                }
-            }
-            return curr;
-        }
-
-        bool splitParentAndName(const string &path, FileNode *&parentNode, string &targetName)
-        {
-            if (path.empty() || path == "/")
-                return false;
-
-            string cleanPath = path;
-            while (cleanPath.size() > 1 && cleanPath.back() == '/')
-                cleanPath.pop_back();
-
-            size_t lastSlash = cleanPath.find_last_of('/');
-            if (lastSlash == string::npos)
-            {
-                parentNode = currentDir;
-                targetName = cleanPath;
-            }
-            else if (lastSlash == 0)
-            {
-                parentNode = root;
-                targetName = cleanPath.substr(1);
-            }
-            else
-            {
-                parentNode = resolvePath(cleanPath.substr(0, lastSlash));
-                targetName = cleanPath.substr(lastSlash + 1);
-            }
-
-            return (parentNode != nullptr && parentNode->isDirectory && !targetName.empty());
-        }
-
-        FileNode *cloneNode(FileNode *src, FileNode *newParent)
-        {
-            FileNode *copy = new FileNode(src->name, src->isDirectory, newParent);
-            copy->content = src->content;
-
-            for (auto const &p : src->children)
-            {
-                copy->children[p.first] = cloneNode(p.second, copy);
-            }
-            return copy;
-        }
-
-        bool isAncestor(FileNode *potentialAncestor, FileNode *node)
-        {
-            FileNode *curr = node;
-            while (curr != nullptr)
-            {
-                if (curr == potentialAncestor)
-                    return true;
-                curr = curr->parent;
-            }
-            return false;
-        }
-
-        vector<string> splitArgs(const string &str)
-        {
-            vector<string> tokens;
-            stringstream ss(str);
-            string word;
-            while (ss >> word)
-            {
-                tokens.push_back(word);
-            }
-            return tokens;
-        }
-
-        void recordTransaction(Transaction tx)
-        {
-            if (isReplaying)
-                return;
-            clearTransactionStack(redoStack);
-            undoStack.push(tx);
-        }
+        
 
         void cpSingle(const string &srcPath, const string &destPath)
         {
@@ -898,14 +799,13 @@
 
                 string createdPath = "";
                 pathFinder(cloned, createdPath);
-                recordTransaction(Transaction("CREATE", createdPath, "", "", "", cloneNode(cloned, nullptr)));
                 cout << GREEN << "Copied '" << srcPath << "' -> '" << createdPath << "'" << RESET << "\n";
             }
             else
             {
                 FileNode *destParent = nullptr;
                 string newName = "";
-                if (!splitParentAndName(destPath, destParent, newName))
+                if (!resolveParentAndName(destPath, destParent, newName))
                 {
                     cout << "cp: invalid destination path '" << destPath << "'\n";
                     return;
@@ -926,7 +826,6 @@
 
                 string createdPath = "";
                 pathFinder(cloned, createdPath);
-                recordTransaction(Transaction("CREATE", createdPath, "", "", "", cloneNode(cloned, nullptr)));
                 cout << GREEN << "Copied '" << srcPath << "' -> '" << createdPath << "'" << RESET << "\n";
             }
         }
@@ -997,14 +896,13 @@
 
                 string newFullPath = "";
                 pathFinder(srcNode, newFullPath);
-                recordTransaction(Transaction("MOVE", newFullPath, oldFullPath));
                 cout << GREEN << "Moved '" << oldFullPath << "' -> '" << newFullPath << "'" << RESET << "\n";
             }
             else
             {
                 FileNode *destParent = nullptr;
                 string newName = "";
-                if (!splitParentAndName(destPath, destParent, newName))
+                if (!resolveParentAndName(destPath, destParent, newName))
                 {
                     cout << "mv: invalid destination path '" << destPath << "'\n";
                     return;
@@ -1027,7 +925,6 @@
 
                 string newFullPath = "";
                 pathFinder(srcNode, newFullPath);
-                recordTransaction(Transaction("MOVE", newFullPath, oldFullPath));
                 cout << GREEN << "Moved/Renamed '" << oldFullPath << "' -> '" << newFullPath << "'" << RESET << "\n";
             }
         }
@@ -1056,134 +953,6 @@
             }
         }
 
-        unsigned long long computeRollingHash(const string &data)
-        {
-            const unsigned long long P = 131;
-            unsigned long long hashVal = 0;
-            for (char c : data)
-            {
-                hashVal = hashVal * P + static_cast<unsigned char>(c);
-            }
-            return hashVal;
-        }
-
-        void collectFilesForHash(FileNode *node, string currentPath, HashEntry *buckets[], int bucketCount)
-        {
-            for (auto const &p : node->children)
-            {
-                FileNode *child = p.second;
-                if (child->name == ".trash")
-                    continue;
-
-                string nextPath = (currentPath == "/") ? ("/" + child->name) : (currentPath + "/" + child->name);
-                if (child->isDirectory)
-                {
-                    collectFilesForHash(child, nextPath, buckets, bucketCount);
-                }
-                else if (!child->content.empty())
-                {
-                    unsigned long long h = computeRollingHash(child->content);
-                    int idx = h % bucketCount;
-                    HashEntry *entry = new HashEntry(h, nextPath, child);
-                    entry->next = buckets[idx];
-                    buckets[idx] = entry;
-                }
-            }
-        }
-
-        void dedup(bool cleanMode = false)
-        {
-            const int BUCKET_COUNT = 64;
-            HashEntry *buckets[BUCKET_COUNT] = {nullptr};
-            collectFilesForHash(root, "/", buckets, BUCKET_COUNT);
-
-            int duplicateGroups = 0;
-            int wastedBytes = 0;
-
-            for (int i = 0; i < BUCKET_COUNT; i++)
-            {
-                HashEntry *curr = buckets[i];
-                while (curr != nullptr)
-                {
-                    if (curr->nodeRef != nullptr)
-                    {
-                        vector<HashEntry *> matches;
-                        HashEntry *runner = curr->next;
-                        while (runner != nullptr)
-                        {
-                            if (runner->nodeRef != nullptr &&
-                                runner->hashKey == curr->hashKey &&
-                                runner->nodeRef->content == curr->nodeRef->content)
-                            {
-                                matches.push_back(runner);
-                            }
-                            runner = runner->next;
-                        }
-
-                        if (!matches.empty())
-                        {
-                            duplicateGroups++;
-                            cout << CYAN << "Duplicate Group #" << duplicateGroups << " (" << curr->nodeRef->content.size() << " Bytes):" << RESET << "\n";
-                            cout << "  [KEEP] " << GREEN << curr->filePath << RESET << "\n";
-
-                            for (HashEntry *dup : matches)
-                            {
-                                wastedBytes += dup->nodeRef->content.size();
-                                if (cleanMode)
-                                {
-                                    cout << "  [DELETED] " << dup->filePath << "\n";
-                                    FileNode *target = dup->nodeRef;
-                                    recordTransaction(Transaction("DELETE", dup->filePath, "", "", "", cloneNode(target, nullptr)));
-                                    target->parent->children.erase(target->name);
-                                    delete target;
-                                }
-                                else
-                                {
-                                    cout << "  [DUPLICATE] " << dup->filePath << "\n";
-                                }
-                                dup->nodeRef = nullptr; 
-                            }
-                        }
-                    }
-                    curr = curr->next;
-                }
-            }
-
-            for (int i = 0; i < BUCKET_COUNT; i++)
-            {
-                HashEntry *curr = buckets[i];
-                while (curr != nullptr)
-                {
-                    HashEntry *temp = curr;
-                    curr = curr->next;
-                    delete temp;
-                }
-            }
-
-            if (duplicateGroups == 0)
-                cout << "No duplicate files found across the file system.\n";
-            else if (!cleanMode)
-                cout << "\nTotal Wasted Space: " << wastedBytes << " Bytes. Run 'dedup clean' to remove duplicates.\n";
-            else
-                cout << "\nCleanup Complete! Freed " << wastedBytes << " Bytes.\n";
-        }
-
-        void trieInsert(TrieNode *tRoot, const string &word)
-        {
-            TrieNode *curr = tRoot;
-            for (char c : word)
-            {
-                unsigned char idx = static_cast<unsigned char>(c);
-                if (idx >= 128)
-                    continue;
-                if (curr->children[idx] == nullptr)
-                {
-                    curr->children[idx] = new TrieNode();
-                }
-                curr = curr->children[idx];
-            }
-            curr->isEndOfWord = true;
-        }
 
         void indexTreeIntoTrie(FileNode *node, string currentPath, TrieNode *tRoot)
         {
@@ -1227,7 +996,7 @@
                 "mkdir", "touch", "ls", "cd", "pwd", "rm", "trash", "restore",
                 "write", "empty", "cat", "save", "load", "tree", "history",
                 "clear", "grep", "nanofetch", "shred", "find", "du",
-                "cp", "mv", "dedup", "suggest", "undo", "redo", "exit"};
+                "cp", "mv", "suggest", "exit"};
 
             for (const string &cmd : commands)
                 trieInsert(tRoot, cmd);
@@ -1259,93 +1028,6 @@
             delete tRoot; 
         }
 
-        void applyReverseTransaction(const Transaction &tx, stack<Transaction> &targetStack)
-        {
-            isReplaying = true;
-
-            if (tx.opType == "CREATE")
-            {
-                FileNode *node = resolvePath(tx.targetPath);
-                if (node != nullptr && node != root)
-                {
-                    FileNode *backup = cloneNode(node, nullptr);
-                    node->parent->children.erase(node->name);
-                    if (currentDir == node || isAncestor(node, currentDir))
-                        currentDir = root;
-                    delete node;
-                    targetStack.push(Transaction("DELETE", tx.targetPath, "", "", "", backup));
-                }
-            }
-            else if (tx.opType == "DELETE")
-            {
-                FileNode *parentNode = nullptr;
-                string name = "";
-                if (splitParentAndName(tx.targetPath, parentNode, name) && tx.nodeBackup != nullptr)
-                {
-                    FileNode *restored = cloneNode(tx.nodeBackup, parentNode);
-                    restored->name = name;
-                    parentNode->children[name] = restored;
-                    targetStack.push(Transaction("CREATE", tx.targetPath, "", "", "", cloneNode(restored, nullptr)));
-                }
-            }
-            else if (tx.opType == "MODIFY")
-            {
-                FileNode *node = resolvePath(tx.targetPath);
-                if (node != nullptr && !node->isDirectory)
-                {
-                    string currentContent = node->content;
-                    node->content = tx.oldContent;
-                    targetStack.push(Transaction("MODIFY", tx.targetPath, "", currentContent, tx.oldContent));
-                }
-            }
-            else if (tx.opType == "MOVE")
-            {
-                FileNode *node = resolvePath(tx.targetPath);
-                FileNode *oldParent = nullptr;
-                string oldName = "";
-                if (node != nullptr && splitParentAndName(tx.oldPath, oldParent, oldName))
-                {
-                    node->parent->children.erase(node->name);
-                    node->name = oldName;
-                    node->parent = oldParent;
-                    oldParent->children[oldName] = node;
-                    targetStack.push(Transaction("MOVE", tx.oldPath, tx.targetPath));
-                }
-            }
-
-            isReplaying = false;
-        }
-
-        void undo()
-        {
-            if (undoStack.empty())
-            {
-                cout << "Nothing to undo.\n";
-                return;
-            }
-            Transaction tx = undoStack.top();
-            undoStack.pop();
-            applyReverseTransaction(tx, redoStack);
-            if (tx.nodeBackup != nullptr)
-                delete tx.nodeBackup;
-            cout << CYAN << "Undo successful (" << tx.opType << " on " << tx.targetPath << ")" << RESET << "\n";
-        }
-
-        void redo()
-        {
-            if (redoStack.empty())
-            {
-                cout << "Nothing to redo.\n";
-                return;
-            }
-
-            Transaction tx = redoStack.top();
-            redoStack.pop();
-            applyReverseTransaction(tx, undoStack);
-            if (tx.nodeBackup != nullptr)
-                delete tx.nodeBackup;
-            cout << CYAN << "Redo successful (" << tx.opType << " on " << tx.targetPath << ")" << RESET << "\n";
-        }
 
         // 1)
         void shred(string filePath)
@@ -1497,21 +1179,6 @@
                     nanofetch();
                     continue;
                 }
-                if (input == "dedup")
-                {
-                    dedup(false);
-                    continue;
-                }
-                if (input == "undo")
-                {
-                    undo();
-                    continue;
-                }
-                if (input == "redo")
-                {
-                    redo();
-                    continue;
-                }
 
                 size_t spacePos = input.find(' ');
                 if (spacePos != string::npos)
@@ -1563,8 +1230,6 @@
                         cp(arg);
                     else if (cmd == "mv")
                         mv(arg);
-                    else if (cmd == "dedup" && arg == "clean")
-                        dedup(true);
                     else if (cmd == "suggest")
                         suggest(arg);
                     else if (cmd == "shred")
