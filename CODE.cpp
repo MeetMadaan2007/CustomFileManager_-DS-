@@ -6,6 +6,8 @@
 #include <deque>
 #include <thread>//allowing the program to explicitly control its own execution state.
 #include <chrono>//allowing the compiler to understand exact time measurements like milliseconds.
+#include <sstream>
+#include <stack>
 using namespace std;
 // 2)
 const string BLUE = "\033[1;34m";
@@ -65,6 +67,68 @@ public:
     }
 };
 
+struct HashEntry
+{
+    unsigned long long hashKey;
+    string filePath;
+    FileNode *nodeRef;
+    HashEntry *next;
+
+    HashEntry(unsigned long long key, string path, FileNode *node)
+    {
+        hashKey = key;
+        filePath = path;
+        nodeRef = node;
+        next = nullptr;
+    }
+};
+
+struct TrieNode
+{
+    TrieNode *children[128];
+    bool isEndOfWord;
+
+    TrieNode()
+    {
+        isEndOfWord = false;
+        for (int i = 0; i < 128; i++)
+        {
+            children[i] = nullptr;
+        }
+    }
+
+    ~TrieNode()
+    {
+        for (int i = 0; i < 128; i++)
+        {
+            if (children[i] != nullptr)
+            {
+                delete children[i];
+            }
+        }
+    }
+};
+
+struct Transaction
+{
+    string opType;        
+    string targetPath;    
+    string oldPath;       
+    string oldContent;    
+    string newContent;    
+    FileNode *nodeBackup; 
+
+    Transaction(string op, string tPath, string oPath = "", string oCont = "", string nCont = "", FileNode *backup = nullptr)
+    {
+        opType = op;
+        targetPath = tPath;
+        oldPath = oPath;
+        oldContent = oCont;
+        newContent = nCont;
+        nodeBackup = backup;
+    }
+};
+
 // implementation of MKDIR
 class FileSystem
 {
@@ -72,6 +136,9 @@ private:
     FileNode *root;
     FileNode *currentDir;
     deque<string> commandHistory;
+    stack<Transaction> undoStack;
+    stack<Transaction> redoStack;
+    bool isReplaying = false;
 
 public:
     FileSystem()
@@ -81,8 +148,22 @@ public:
         root->children[".trash"] = new FileNode(".trash", true, root);
     }
 
+    void clearTransactionStack(stack<Transaction> &st)
+    {
+        while (!st.empty())
+        {
+            if (st.top().nodeBackup != nullptr)
+            {
+                delete st.top().nodeBackup;
+            }
+            st.pop();
+        }
+    }
+
     ~FileSystem()
     {
+        clearTransactionStack(undoStack);
+        clearTransactionStack(redoStack);
         delete root;
     }
 
@@ -96,6 +177,9 @@ public:
         }
         FileNode *newDir = new FileNode(dirName, true, currentDir);
         currentDir->children[dirName] = newDir;
+        string fullPath = "";
+        pathFinder(newDir, fullPath);
+        recordTransaction(Transaction("CREATE", fullPath, "", "", "", cloneNode(newDir, nullptr)));
     }
 
     void touch(string fileName)
@@ -107,6 +191,9 @@ public:
         }
         FileNode *newFile = new FileNode(fileName, false, currentDir);
         currentDir->children[fileName] = newFile;
+        string fullPath = "";
+        pathFinder(newFile, fullPath);
+        recordTransaction(Transaction("CREATE", fullPath, "", "", "", cloneNode(newFile, nullptr)));
     }
     void ls()
     {
@@ -195,6 +282,9 @@ public:
             return;
         }
         FileNode *temp = currentDir->children[targetName];
+        string fullPath = "";
+        pathFinder(temp, fullPath);
+        recordTransaction(Transaction("DELETE", fullPath, "", "", "", cloneNode(temp, nullptr)));
         currentDir->children.erase(targetName);
         delete temp;
     }
@@ -250,7 +340,13 @@ public:
             cout << fileName << " is a Directory!\n";
             return;
         }
-        currentDir->children[fileName]->content += (text + "\n");
+        FileNode *target = currentDir->children[fileName];
+        string oldCont = target->content;
+        string fullPath = "";
+        pathFinder(target, fullPath);
+
+        target->content += (text + "\n");
+        recordTransaction(Transaction("MODIFY", fullPath, "", oldCont, target->content));
     }
 
     void empty(string fileName)
@@ -265,7 +361,13 @@ public:
             cout << fileName << " is a Directory!\n";
             return;
         }
-        currentDir->children[fileName]->content = "";
+        FileNode *target = currentDir->children[fileName];
+        string oldCont = target->content;
+        string fullPath = "";
+        pathFinder(target, fullPath);
+
+        target->content = "";
+        recordTransaction(Transaction("MODIFY", fullPath, "", oldCont, ""));
     }
 
     void cat(string fileName)
@@ -384,6 +486,7 @@ public:
             cout << "Could not open the file\n";
             return;
         }
+        isReplaying = true;
         string type, path;
         while (inFile >> type >> path)
         {
@@ -423,6 +526,7 @@ public:
             }
         }
         currentDir = root;
+        isReplaying = false;
     }
 
     void treeHelper(FileNode *node, int depth)
@@ -535,6 +639,603 @@ public:
         cout << CYAN << "                               " << RESET << "  " << BLUE << "Used Space: " << RESET << totalBytes << " Bytes\n";
         cout << "\n";
     }
+
+    FileNode *resolvePath(const string &path)
+    {
+        if (path.empty())
+            return nullptr;
+        if (path == "/")
+            return root;
+
+        FileNode *curr = (path[0] == '/') ? root : currentDir;
+        int i = (path[0] == '/') ? 1 : 0;
+
+        while (i < path.size())
+        {
+            string part = "";
+            while (i < path.size() && path[i] != '/')
+            {
+                part += path[i];
+                i++;
+            }
+            i++;
+
+            if (part.empty() || part == ".")
+                continue;
+            if (part == "..")
+            {
+                if (curr->parent != nullptr)
+                    curr = curr->parent;
+            }
+            else
+            {
+                if (!curr->isDirectory || !curr->children.contains(part))
+                    return nullptr;
+                curr = curr->children[part];
+            }
+        }
+        return curr;
+    }
+
+    bool splitParentAndName(const string &path, FileNode *&parentNode, string &targetName)
+    {
+        if (path.empty() || path == "/")
+            return false;
+
+        string cleanPath = path;
+        while (cleanPath.size() > 1 && cleanPath.back() == '/')
+            cleanPath.pop_back();
+
+        size_t lastSlash = cleanPath.find_last_of('/');
+        if (lastSlash == string::npos)
+        {
+            parentNode = currentDir;
+            targetName = cleanPath;
+        }
+        else if (lastSlash == 0)
+        {
+            parentNode = root;
+            targetName = cleanPath.substr(1);
+        }
+        else
+        {
+            parentNode = resolvePath(cleanPath.substr(0, lastSlash));
+            targetName = cleanPath.substr(lastSlash + 1);
+        }
+
+        return (parentNode != nullptr && parentNode->isDirectory && !targetName.empty());
+    }
+
+    FileNode *cloneNode(FileNode *src, FileNode *newParent)
+    {
+        FileNode *copy = new FileNode(src->name, src->isDirectory, newParent);
+        copy->content = src->content;
+
+        for (auto const &p : src->children)
+        {
+            copy->children[p.first] = cloneNode(p.second, copy);
+        }
+        return copy;
+    }
+
+    bool isAncestor(FileNode *potentialAncestor, FileNode *node)
+    {
+        FileNode *curr = node;
+        while (curr != nullptr)
+        {
+            if (curr == potentialAncestor)
+                return true;
+            curr = curr->parent;
+        }
+        return false;
+    }
+
+    vector<string> splitArgs(const string &str)
+    {
+        vector<string> tokens;
+        stringstream ss(str);
+        string word;
+        while (ss >> word)
+        {
+            tokens.push_back(word);
+        }
+        return tokens;
+    }
+
+    void recordTransaction(Transaction tx)
+    {
+        if (isReplaying)
+            return;
+        clearTransactionStack(redoStack);
+        undoStack.push(tx);
+    }
+
+    void cpSingle(const string &srcPath, const string &destPath)
+    {
+        FileNode *srcNode = resolvePath(srcPath);
+        if (srcNode == nullptr)
+        {
+            cout << "cp: cannot find '" << srcPath << "'\n";
+            return;
+        }
+        if (srcNode == root || srcNode->name == ".trash")
+        {
+            cout << "cp: cannot copy system directory\n";
+            return;
+        }
+
+        FileNode *destNode = resolvePath(destPath);
+        if (destNode != nullptr)
+        {
+            if (!destNode->isDirectory)
+            {
+                cout << "cp: destination '" << destPath << "' already exists as a file\n";
+                return;
+            }
+            if (isAncestor(srcNode, destNode))
+            {
+                cout << "cp: cannot copy a directory into itself\n";
+                return;
+            }
+            if (destNode->children.contains(srcNode->name))
+            {
+                cout << "cp: '" << srcNode->name << "' already exists in destination\n";
+                return;
+            }
+            FileNode *cloned = cloneNode(srcNode, destNode);
+            destNode->children[srcNode->name] = cloned;
+
+            string createdPath = "";
+            pathFinder(cloned, createdPath);
+            recordTransaction(Transaction("CREATE", createdPath, "", "", "", cloneNode(cloned, nullptr)));
+            cout << GREEN << "Copied '" << srcPath << "' -> '" << createdPath << "'" << RESET << "\n";
+        }
+        else
+        {
+            FileNode *destParent = nullptr;
+            string newName = "";
+            if (!splitParentAndName(destPath, destParent, newName))
+            {
+                cout << "cp: invalid destination path '" << destPath << "'\n";
+                return;
+            }
+            if (isAncestor(srcNode, destParent))
+            {
+                cout << "cp: cannot copy a directory into itself\n";
+                return;
+            }
+            if (destParent->children.contains(newName))
+            {
+                cout << "cp: '" << newName << "' already exists\n";
+                return;
+            }
+            FileNode *cloned = cloneNode(srcNode, destParent);
+            cloned->name = newName;
+            destParent->children[newName] = cloned;
+
+            string createdPath = "";
+            pathFinder(cloned, createdPath);
+            recordTransaction(Transaction("CREATE", createdPath, "", "", "", cloneNode(cloned, nullptr)));
+            cout << GREEN << "Copied '" << srcPath << "' -> '" << createdPath << "'" << RESET << "\n";
+        }
+    }
+
+    void cp(const string &rawArgs)
+    {
+        vector<string> args = splitArgs(rawArgs);
+        if (args.size() < 2)
+        {
+            cout << "Usage: cp <src1> [src2 ...] <destination>\n";
+            return;
+        }
+        string dest = args.back();
+        if (args.size() > 2)
+        {
+            FileNode *destNode = resolvePath(dest);
+            if (destNode == nullptr || !destNode->isDirectory)
+            {
+                cout << "cp: target '" << dest << "' must be an existing directory for multiple files\n";
+                return;
+            }
+        }
+        for (int i = 0; i < args.size() - 1; i++)
+        {
+            cpSingle(args[i], dest);
+        }
+    }
+
+    void mvSingle(const string &srcPath, const string &destPath)
+    {
+        FileNode *srcNode = resolvePath(srcPath);
+        if (srcNode == nullptr)
+        {
+            cout << "mv: cannot find '" << srcPath << "'\n";
+            return;
+        }
+        if (srcNode == root || srcNode->name == ".trash")
+        {
+            cout << "mv: cannot move system directory\n";
+            return;
+        }
+
+        string oldFullPath = "";
+        pathFinder(srcNode, oldFullPath);
+
+        FileNode *destNode = resolvePath(destPath);
+        if (destNode != nullptr)
+        {
+            if (!destNode->isDirectory)
+            {
+                cout << "mv: destination '" << destPath << "' already exists as a file\n";
+                return;
+            }
+            if (isAncestor(srcNode, destNode))
+            {
+                cout << "mv: cannot move a directory inside itself (cycle detected)\n";
+                return;
+            }
+            if (destNode->children.contains(srcNode->name))
+            {
+                cout << "mv: '" << srcNode->name << "' already exists in destination\n";
+                return;
+            }
+
+            srcNode->parent->children.erase(srcNode->name);
+            srcNode->parent = destNode;
+            destNode->children[srcNode->name] = srcNode;
+
+            string newFullPath = "";
+            pathFinder(srcNode, newFullPath);
+            recordTransaction(Transaction("MOVE", newFullPath, oldFullPath));
+            cout << GREEN << "Moved '" << oldFullPath << "' -> '" << newFullPath << "'" << RESET << "\n";
+        }
+        else
+        {
+            FileNode *destParent = nullptr;
+            string newName = "";
+            if (!splitParentAndName(destPath, destParent, newName))
+            {
+                cout << "mv: invalid destination path '" << destPath << "'\n";
+                return;
+            }
+            if (isAncestor(srcNode, destParent))
+            {
+                cout << "mv: cannot move a directory inside itself (cycle detected)\n";
+                return;
+            }
+            if (destParent->children.contains(newName))
+            {
+                cout << "mv: '" << newName << "' already exists\n";
+                return;
+            }
+
+            srcNode->parent->children.erase(srcNode->name);
+            srcNode->name = newName;
+            srcNode->parent = destParent;
+            destParent->children[newName] = srcNode;
+
+            string newFullPath = "";
+            pathFinder(srcNode, newFullPath);
+            recordTransaction(Transaction("MOVE", newFullPath, oldFullPath));
+            cout << GREEN << "Moved/Renamed '" << oldFullPath << "' -> '" << newFullPath << "'" << RESET << "\n";
+        }
+    }
+
+    void mv(const string &rawArgs)
+    {
+        vector<string> args = splitArgs(rawArgs);
+        if (args.size() < 2)
+        {
+            cout << "Usage: mv <src1> [src2 ...] <destination>\n";
+            return;
+        }
+        string dest = args.back();
+        if (args.size() > 2)
+        {
+            FileNode *destNode = resolvePath(dest);
+            if (destNode == nullptr || !destNode->isDirectory)
+            {
+                cout << "mv: target '" << dest << "' must be an existing directory for multiple files\n";
+                return;
+            }
+        }
+        for (int i = 0; i < args.size() - 1; i++)
+        {
+            mvSingle(args[i], dest);
+        }
+    }
+
+    unsigned long long computeRollingHash(const string &data)
+    {
+        const unsigned long long P = 131;
+        unsigned long long hashVal = 0;
+        for (char c : data)
+        {
+            hashVal = hashVal * P + static_cast<unsigned char>(c);
+        }
+        return hashVal;
+    }
+
+    void collectFilesForHash(FileNode *node, string currentPath, HashEntry *buckets[], int bucketCount)
+    {
+        for (auto const &p : node->children)
+        {
+            FileNode *child = p.second;
+            if (child->name == ".trash")
+                continue;
+
+            string nextPath = (currentPath == "/") ? ("/" + child->name) : (currentPath + "/" + child->name);
+            if (child->isDirectory)
+            {
+                collectFilesForHash(child, nextPath, buckets, bucketCount);
+            }
+            else if (!child->content.empty())
+            {
+                unsigned long long h = computeRollingHash(child->content);
+                int idx = h % bucketCount;
+                HashEntry *entry = new HashEntry(h, nextPath, child);
+                entry->next = buckets[idx];
+                buckets[idx] = entry;
+            }
+        }
+    }
+
+    void dedup(bool cleanMode = false)
+    {
+        const int BUCKET_COUNT = 64;
+        HashEntry *buckets[BUCKET_COUNT] = {nullptr};
+        collectFilesForHash(root, "/", buckets, BUCKET_COUNT);
+
+        int duplicateGroups = 0;
+        int wastedBytes = 0;
+
+        for (int i = 0; i < BUCKET_COUNT; i++)
+        {
+            HashEntry *curr = buckets[i];
+            while (curr != nullptr)
+            {
+                if (curr->nodeRef != nullptr)
+                {
+                    vector<HashEntry *> matches;
+                    HashEntry *runner = curr->next;
+                    while (runner != nullptr)
+                    {
+                        if (runner->nodeRef != nullptr &&
+                            runner->hashKey == curr->hashKey &&
+                            runner->nodeRef->content == curr->nodeRef->content)
+                        {
+                            matches.push_back(runner);
+                        }
+                        runner = runner->next;
+                    }
+
+                    if (!matches.empty())
+                    {
+                        duplicateGroups++;
+                        cout << CYAN << "Duplicate Group #" << duplicateGroups << " (" << curr->nodeRef->content.size() << " Bytes):" << RESET << "\n";
+                        cout << "  [KEEP] " << GREEN << curr->filePath << RESET << "\n";
+
+                        for (HashEntry *dup : matches)
+                        {
+                            wastedBytes += dup->nodeRef->content.size();
+                            if (cleanMode)
+                            {
+                                cout << "  [DELETED] " << dup->filePath << "\n";
+                                FileNode *target = dup->nodeRef;
+                                recordTransaction(Transaction("DELETE", dup->filePath, "", "", "", cloneNode(target, nullptr)));
+                                target->parent->children.erase(target->name);
+                                delete target;
+                            }
+                            else
+                            {
+                                cout << "  [DUPLICATE] " << dup->filePath << "\n";
+                            }
+                            dup->nodeRef = nullptr; 
+                        }
+                    }
+                }
+                curr = curr->next;
+            }
+        }
+
+        for (int i = 0; i < BUCKET_COUNT; i++)
+        {
+            HashEntry *curr = buckets[i];
+            while (curr != nullptr)
+            {
+                HashEntry *temp = curr;
+                curr = curr->next;
+                delete temp;
+            }
+        }
+
+        if (duplicateGroups == 0)
+            cout << "No duplicate files found across the file system.\n";
+        else if (!cleanMode)
+            cout << "\nTotal Wasted Space: " << wastedBytes << " Bytes. Run 'dedup clean' to remove duplicates.\n";
+        else
+            cout << "\nCleanup Complete! Freed " << wastedBytes << " Bytes.\n";
+    }
+
+    void trieInsert(TrieNode *tRoot, const string &word)
+    {
+        TrieNode *curr = tRoot;
+        for (char c : word)
+        {
+            unsigned char idx = static_cast<unsigned char>(c);
+            if (idx >= 128)
+                continue;
+            if (curr->children[idx] == nullptr)
+            {
+                curr->children[idx] = new TrieNode();
+            }
+            curr = curr->children[idx];
+        }
+        curr->isEndOfWord = true;
+    }
+
+    void indexTreeIntoTrie(FileNode *node, string currentPath, TrieNode *tRoot)
+    {
+        for (auto const &p : node->children)
+        {
+            FileNode *child = p.second;
+            if (child->name == ".trash")
+                continue;
+
+            trieInsert(tRoot, child->name);
+            string nextPath = (currentPath == "/") ? ("/" + child->name) : (currentPath + "/" + child->name);
+            trieInsert(tRoot, nextPath);
+
+            if (child->isDirectory)
+            {
+                indexTreeIntoTrie(child, nextPath, tRoot);
+            }
+        }
+    }
+
+    void trieCollectWords(TrieNode *node, string currentWord, vector<string> &results)
+    {
+        if (node->isEndOfWord)
+        {
+            results.push_back(currentWord);
+        }
+        for (int i = 0; i < 128; i++)
+        {
+            if (node->children[i] != nullptr)
+            {
+                trieCollectWords(node->children[i], currentWord + static_cast<char>(i), results);
+            }
+        }
+    }
+
+    void suggest(const string &prefix)
+    {
+        TrieNode *tRoot = new TrieNode();
+
+        vector<string> commands = {
+            "mkdir", "touch", "ls", "cd", "pwd", "rm", "trash", "restore",
+            "write", "empty", "cat", "save", "load", "tree", "history",
+            "clear", "grep", "nanofetch", "shred", "find", "du",
+            "cp", "mv", "dedup", "suggest", "undo", "redo", "exit"};
+
+        for (const string &cmd : commands)
+            trieInsert(tRoot, cmd);
+
+        indexTreeIntoTrie(root, "/", tRoot);
+
+        TrieNode *curr = tRoot;
+        for (char c : prefix)
+        {
+            unsigned char idx = static_cast<unsigned char>(c);
+            if (idx >= 128 || curr->children[idx] == nullptr)
+            {
+                cout << "No suggestions matching '" << prefix << "'\n";
+                delete tRoot;
+                return;
+            }
+            curr = curr->children[idx];
+        }
+
+        vector<string> matches;
+        trieCollectWords(curr, prefix, matches);
+
+        cout << CYAN << "Suggestions for '" << prefix << "':" << RESET << "\n";
+        for (const string &m : matches)
+        {
+            cout << "  -> " << GREEN << m << RESET << "\n";
+        }
+
+        delete tRoot; 
+    }
+
+    void applyReverseTransaction(const Transaction &tx, stack<Transaction> &targetStack)
+    {
+        isReplaying = true;
+
+        if (tx.opType == "CREATE")
+        {
+            FileNode *node = resolvePath(tx.targetPath);
+            if (node != nullptr && node != root)
+            {
+                FileNode *backup = cloneNode(node, nullptr);
+                node->parent->children.erase(node->name);
+                if (currentDir == node || isAncestor(node, currentDir))
+                    currentDir = root;
+                delete node;
+                targetStack.push(Transaction("DELETE", tx.targetPath, "", "", "", backup));
+            }
+        }
+        else if (tx.opType == "DELETE")
+        {
+            FileNode *parentNode = nullptr;
+            string name = "";
+            if (splitParentAndName(tx.targetPath, parentNode, name) && tx.nodeBackup != nullptr)
+            {
+                FileNode *restored = cloneNode(tx.nodeBackup, parentNode);
+                restored->name = name;
+                parentNode->children[name] = restored;
+                targetStack.push(Transaction("CREATE", tx.targetPath, "", "", "", cloneNode(restored, nullptr)));
+            }
+        }
+        else if (tx.opType == "MODIFY")
+        {
+            FileNode *node = resolvePath(tx.targetPath);
+            if (node != nullptr && !node->isDirectory)
+            {
+                string currentContent = node->content;
+                node->content = tx.oldContent;
+                targetStack.push(Transaction("MODIFY", tx.targetPath, "", currentContent, tx.oldContent));
+            }
+        }
+        else if (tx.opType == "MOVE")
+        {
+            FileNode *node = resolvePath(tx.targetPath);
+            FileNode *oldParent = nullptr;
+            string oldName = "";
+            if (node != nullptr && splitParentAndName(tx.oldPath, oldParent, oldName))
+            {
+                node->parent->children.erase(node->name);
+                node->name = oldName;
+                node->parent = oldParent;
+                oldParent->children[oldName] = node;
+                targetStack.push(Transaction("MOVE", tx.oldPath, tx.targetPath));
+            }
+        }
+
+        isReplaying = false;
+    }
+
+    void undo()
+    {
+        if (undoStack.empty())
+        {
+            cout << "Nothing to undo.\n";
+            return;
+        }
+        Transaction tx = undoStack.top();
+        undoStack.pop();
+        applyReverseTransaction(tx, redoStack);
+        if (tx.nodeBackup != nullptr)
+            delete tx.nodeBackup;
+        cout << CYAN << "Undo successful (" << tx.opType << " on " << tx.targetPath << ")" << RESET << "\n";
+    }
+
+    void redo()
+    {
+        if (redoStack.empty())
+        {
+            cout << "Nothing to redo.\n";
+            return;
+        }
+
+        Transaction tx = redoStack.top();
+        redoStack.pop();
+        applyReverseTransaction(tx, undoStack);
+        if (tx.nodeBackup != nullptr)
+            delete tx.nodeBackup;
+        cout << CYAN << "Redo successful (" << tx.opType << " on " << tx.targetPath << ")" << RESET << "\n";
+    }
+
     void run()
     {
         load();
@@ -590,6 +1291,21 @@ public:
                 nanofetch();
                 continue;
             }
+            if (input == "dedup")
+            {
+                dedup(false);
+                continue;
+            }
+            if (input == "undo")
+            {
+                undo();
+                continue;
+            }
+            if (input == "redo")
+            {
+                redo();
+                continue;
+            }
 
             int spacePos = input.find(' ');
             if (spacePos != string::npos)
@@ -629,6 +1345,20 @@ public:
                     lsWildcard(arg);
                 else if (cmd == "grep")
                     grep(arg);
+                else if (cmd == "cp")
+                    cp(arg);
+                else if (cmd == "mv")
+                    mv(arg);
+                else if (cmd == "dedup" && arg == "clean")
+                    dedup(true);
+                else if (cmd == "suggest")
+                    suggest(arg);
+                else if (cmd == "shred")
+                    shred(arg);
+                else if (cmd == "find")
+                    find(arg);
+                else if (cmd == "du")
+                    du(arg);
             }
             else if (!input.empty())
             {
