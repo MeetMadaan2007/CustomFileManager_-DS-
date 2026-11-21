@@ -12,7 +12,7 @@ const string BLUE = "\033[1;34m";
 const string GREEN = "\033[0;32m";
 const string CYAN = "\033[1;36m";
 const string RESET = "\033[0m";
-void bootSequeuce()
+void bootSequence()
 {
 // Just removing everything else from the screen
 #ifdef _WIN32
@@ -21,11 +21,11 @@ void bootSequeuce()
     system("clear");
 #endif
 
-    cout << "  _   _                  Rl___  \n";
-    cout << " | \\ | | __ _ _ __   ___|  ___| ___\n";
-    cout << " |  \\| |/ _` | '_ \\ / _ \\ |_ / __|\n";
-    cout << " | |\\  | (_| | | | | (_) |  _\\__ \\\n";
-    cout << " |_| \\_|\\__,_|_| |_|\\___/|_| |___/\n\n";
+    cout << "  _   _                   _____ ____  \n";
+    cout << " | \\ | | __ _ _ __   ___ |  ___/ ___| \n";
+    cout << " |  \\| |/ _` | '_ \\ / _ \\| |_  \\___ \\ \n";
+    cout << " | |\\  | (_| | | | | (_) |  _|  ___) |\n";
+    cout << " |_| \\_|\\__,_|_| |_|\\___/|_|   |____/ \n\n";
 
     cout << " Booting NanoFS Kernel v1.0...\n";
     cout << " [";
@@ -91,7 +91,7 @@ public:
     {
         if (currentDir->children.contains(dirName))
         {
-            cout << "mkdir :  cannot create directory " << dirName << " : File Already Exists";
+            cout << "mkdir :  cannot create directory " << dirName << " : File Already Exists\n";
             return;
         }
         FileNode *newDir = new FileNode(dirName, true, currentDir);
@@ -102,7 +102,7 @@ public:
     {
         if (currentDir->children.contains(fileName))
         {
-            cout << "touch: cannot create file " << fileName << " : File Already Exists";
+            cout << "touch: cannot create file " << fileName << " : File Already Exists\n";
             return;
         }
         FileNode *newFile = new FileNode(fileName, false, currentDir);
@@ -110,7 +110,7 @@ public:
     }
     void ls()
     {
-        for (auto p : currentDir->children)
+        for (auto const &p : currentDir->children)
         {
             if (p.second->isDirectory)
                 cout << BLUE << p.first << RESET << "\n";
@@ -130,7 +130,7 @@ public:
         {
             ext = pattern;
         }
-        for (auto p : currentDir->children)
+        for (auto const &p : currentDir->children)
         {
             if (p.first.size() >= ext.size() && p.first.substr(p.first.size() - ext.size()) == ext)
             {
@@ -156,7 +156,7 @@ public:
         }
         if (!currentDir->children.contains(dirName) || !currentDir->children[dirName]->isDirectory)
         {
-            cout << "Directory: " << dirName << " doesn't exists\n";
+            cout << "Directory: " << dirName << " doesn't exist\n";
             return;
         }
         currentDir = currentDir->children[dirName];
@@ -189,6 +189,11 @@ public:
 
     void rm(string targetName)
     {
+        if (targetName == ".trash" && currentDir == root)
+        {
+            cout << "Cannot remove system directory '.trash'\n";
+            return;
+        }
         if (!currentDir->children.contains(targetName))
         {
             cout << "File : " << targetName << " Doesn't exist\n";
@@ -201,6 +206,11 @@ public:
 
     void trash(string targetName)
     {
+        if (targetName == ".trash" && currentDir == root)
+        {
+            cout << "Cannot move system directory '.trash' to trash\n";
+            return;
+        }
         if (!currentDir->children.contains(targetName))
         {
             cout << "File : " << targetName << " Doesn't exist\n";
@@ -242,7 +252,7 @@ public:
     {
         if (!currentDir->children.contains(fileName))
         {
-            cout << "File : " << fileName << " Doesn't exists\n";
+            cout << "File : " << fileName << " Doesn't exist\n";
             return;
         }
         if (currentDir->children[fileName]->isDirectory)
@@ -257,7 +267,7 @@ public:
     {
         if (!currentDir->children.contains(fileName))
         {
-            cout << "File : " << fileName << " Doesn't exists\n";
+            cout << "File : " << fileName << " Doesn't exist\n";
             return;
         }
         if (currentDir->children[fileName]->isDirectory)
@@ -272,7 +282,7 @@ public:
     {
         if (!currentDir->children.contains(fileName))
         {
-            cout << "File : " << fileName << " Doesn't exists\n";
+            cout << "File : " << fileName << " Doesn't exist\n";
             return;
         }
         if (currentDir->children[fileName]->isDirectory)
@@ -307,7 +317,7 @@ public:
         {
             path += "/";
         }
-        for (auto i : node->children)
+        for (auto const &i : node->children)
         {
             string childPath = path + i.first;
             // write to file path + fileName;
@@ -340,7 +350,7 @@ public:
     string unescapeNewLines(const string &content)
     {
         string result = "";
-        for (int i = 0; i < content.size(); i++)
+        for (size_t i = 0; i < content.size(); i++)
         {
             if (content[i] == '\\' && i < content.size() - 1 && content[i + 1] == 'n')
             {
@@ -359,7 +369,7 @@ public:
     {
         vector<string> parts;
         string s = "";
-        for (int i = 1; i < path.size(); i++)
+        for (size_t i = 1; i < path.size(); i++)
         {
             if (path[i] == '/')
             {
@@ -399,7 +409,7 @@ public:
             }
             vector<string> paths = splitPaths(path);
             FileNode *temp = root;
-            for (int i = 0; i < paths.size(); i++)
+            for (size_t i = 0; i < paths.size(); i++)
             {
                 if (temp->children.contains(paths[i]))
                 {
@@ -427,7 +437,7 @@ public:
 
     void treeHelper(FileNode *node, int depth)
     {
-        for (auto i : node->children)
+        for (auto const &i : node->children)
         {
             for (int j = 0; j < depth; j++)
             {
@@ -453,7 +463,7 @@ public:
 
     void history()
     {
-        for (int i = 0; i < commandHistory.size(); i++)
+        for (size_t i = 0; i < commandHistory.size(); i++)
         {
             cout << i + 1 << "  " << commandHistory[i] << '\n';
         }
@@ -591,7 +601,7 @@ public:
                 continue;
             }
 
-            int spacePos = input.find(' ');
+            size_t spacePos = input.find(' ');
             if (spacePos != string::npos)
             {
                 string cmd = input.substr(0, spacePos);
@@ -611,7 +621,7 @@ public:
                     empty(arg);
                 else if (cmd == "write")
                 {
-                    int secondSpace = arg.find(' ');
+                    size_t secondSpace = arg.find(' ');
                     if (secondSpace != string::npos)
                     {
                         write(arg.substr(0, secondSpace), arg.substr(secondSpace + 1));
@@ -629,6 +639,14 @@ public:
                     lsWildcard(arg);
                 else if (cmd == "grep")
                     grep(arg);
+                else if (cmd == "shred")
+                    shred(arg);
+                else if (cmd == "find")
+                    find(arg);
+                else if (cmd == "du")
+                    du(arg);
+                else
+                    cout << "Command not recognized.\n";
             }
             else if (!input.empty())
             {
@@ -649,8 +667,8 @@ public:
 
                 cout << "Memory Shredded successfully for: " << filename << endl;
 
-                delete target;
                 currentDir->children.erase(filename); // removal from unordered map
+                delete target;
             }
             else
             {
@@ -707,14 +725,14 @@ public:
         int totalSize = 0;
         for (auto const &i : currentNode->children)
         {
-            FileNode *childeNode = i.second;
-            if (childeNode->isDirectory)
+            FileNode *childNode = i.second;
+            if (childNode->isDirectory)
             {
-                totalSize += duHelper(childeNode);
+                totalSize += duHelper(childNode);
             }
             else
             {
-                totalSize += childeNode->content.length();
+                totalSize += childNode->content.length();
             }
         }
 
@@ -745,6 +763,7 @@ public:
 
 int main()
 {
+    bootSequence();
     FileSystem fs;
     fs.run();
     return 0;
