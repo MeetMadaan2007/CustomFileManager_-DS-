@@ -3,6 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include <fstream>
+#include <sstream>
 #include <deque>
 #include <thread>//allowing the program to explicitly control its own execution state.
 #include <chrono>//allowing the compiler to understand exact time measurements like milliseconds.
@@ -86,38 +87,174 @@ public:
         delete root;
     }
 
-    // creating new directory
-    void mkdir(string dirName)
+    FileNode *resolvePath(const string &path)
     {
-        if (currentDir->children.contains(dirName))
+        if (path.empty())
         {
-            cout << "mkdir :  cannot create directory " << dirName << " : File Already Exists\n";
-            return;
+            return nullptr;
         }
-        FileNode *newDir = new FileNode(dirName, true, currentDir);
-        currentDir->children[dirName] = newDir;
+
+        FileNode *temp;
+        if (path[0] == '/')
+        {
+            temp = root;
+        }
+        else
+        {
+            temp = currentDir;
+        }
+
+        stringstream ss(path);
+        string segment;
+
+        while (getline(ss, segment, '/'))
+        {
+            if (segment.empty() || segment == ".")
+            {
+                continue;
+            }
+
+            if (segment == "..")
+            {
+                if (temp->parent != nullptr)
+                {
+                    temp = temp->parent;
+                }
+                continue;
+            }
+
+            if (!temp->isDirectory || !temp->children.contains(segment))
+            {
+                return nullptr;
+            }
+
+            temp = temp->children[segment];
+        }
+
+        return temp;
     }
 
-    void touch(string fileName)
+    bool resolveParentAndName(const string &rawPath, FileNode *&parentOut, string &nameOut)
     {
-        if (currentDir->children.contains(fileName))
+        string path = rawPath;
+
+        while (path.size() > 1 && path.back() == '/')
+        {
+            path.pop_back();
+        }
+
+        if (path.empty() || path == "/")
+        {
+            return false;
+        }
+
+        size_t lastSlash = path.rfind('/');
+
+        if (lastSlash == string::npos)
+        {
+            parentOut = currentDir;
+            nameOut = path;
+        }
+        else
+        {
+            string parentPath;
+            if (lastSlash == 0)
+            {
+                parentPath = "/";
+            }
+            else
+            {
+                parentPath = path.substr(0, lastSlash);
+            }
+
+            parentOut = resolvePath(parentPath);
+            nameOut = path.substr(lastSlash + 1);
+        }
+
+        if (parentOut == nullptr || !parentOut->isDirectory)
+        {
+            return false;
+        }
+
+        if (nameOut.empty() || nameOut == "." || nameOut == "..")
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    bool isAncestor(FileNode *potentialAncestor, FileNode *node)
+    {
+        FileNode *temp = node;
+
+        while (temp != nullptr)
+        {
+            if (temp == potentialAncestor)
+            {
+                return true;
+            }
+            temp = temp->parent;
+        }
+
+        return false;
+    }
+
+    // creating new directory
+    void mkdir(string dirPath)
+    {
+        FileNode *parentDir = nullptr;
+        string dirName;
+        if (!resolveParentAndName(dirPath, parentDir, dirName))
+        {
+            cout << "mkdir: invalid path '" << dirPath << "'\n";
+            return;
+        }
+        if (parentDir->children.contains(dirName))
+        {
+            cout << "mkdir: cannot create directory " << dirName << " : File Already Exists\n";
+            return;
+        }
+        parentDir->children[dirName] = new FileNode(dirName, true, parentDir);
+    }
+
+    void touch(string filePath)
+    {
+        FileNode *parentDir = nullptr;
+        string fileName;
+        if (!resolveParentAndName(filePath, parentDir, fileName))
+        {
+            cout << "touch: invalid path '" << filePath << "'\n";
+            return;
+        }
+        if (parentDir->children.contains(fileName))
         {
             cout << "touch: cannot create file " << fileName << " : File Already Exists\n";
             return;
         }
-        FileNode *newFile = new FileNode(fileName, false, currentDir);
-        currentDir->children[fileName] = newFile;
+        parentDir->children[fileName] = new FileNode(fileName, false, parentDir);
     }
-    void ls()
+    void ls(string path = ".")
     {
-        for (auto const &p : currentDir->children)
+        FileNode *target = resolvePath(path);
+        if (target == nullptr)
+        {
+            cout << "ls: path '" << path << "' doesn't exist\n";
+            return;
+        }
+        if (!target->isDirectory)
+        {
+            cout << GREEN << target->name << RESET << "\n";
+            return;
+        }
+        for (auto const &p : target->children)
         {
             if (p.second->isDirectory)
                 cout << BLUE << p.first << RESET << "\n";
             else
                 cout << GREEN << p.first << RESET << "\n";
         }
-    }
+}
 
     void lsWildcard(string pattern)
     {
@@ -142,24 +279,15 @@ public:
         }
     }
 
-    void cd(string dirName)
+    void cd(string dirPath)
     {
-        if (dirName == "..")
+        FileNode *target = resolvePath(dirPath);
+        if (target == nullptr || !target->isDirectory)
         {
-            if (currentDir->parent == nullptr)
-            {
-                cout << "No parent directory\n";
-                return;
-            }
-            currentDir = currentDir->parent;
+            cout << "Directory: " << dirPath << " doesn't exist\n";
             return;
         }
-        if (!currentDir->children.contains(dirName) || !currentDir->children[dirName]->isDirectory)
-        {
-            cout << "Directory: " << dirName << " doesn't exist\n";
-            return;
-        }
-        currentDir = currentDir->children[dirName];
+        currentDir = target;
     }
 
     void pathFinder(FileNode *dir, string &path)
@@ -187,45 +315,56 @@ public:
         cout << path << '\n';
     }
 
-    void rm(string targetName)
+    void rm(string targetPath)
     {
-        if (targetName == ".trash" && currentDir == root)
+        FileNode *target = resolvePath(targetPath);
+        if (target == nullptr)
         {
-            cout << "Cannot remove system directory '.trash'\n";
+            cout << "File : " << targetPath << " Doesn't exist\n";
             return;
         }
-        if (!currentDir->children.contains(targetName))
+        if (target == root || target == root->children[".trash"])
         {
-            cout << "File : " << targetName << " Doesn't exist\n";
+            cout << "Cannot remove system directory\n";
             return;
         }
-        FileNode *temp = currentDir->children[targetName];
-        currentDir->children.erase(targetName);
-        delete temp;
+        if (isAncestor(target, currentDir))
+        {
+            cout << "Cannot remove current or parent working directory\n";
+            return;
+        }
+        target->parent->children.erase(target->name);
+        delete target;
     }
 
-    void trash(string targetName)
+    void trash(string targetPath)
     {
-        if (targetName == ".trash" && currentDir == root)
+        FileNode *target = resolvePath(targetPath);
+        if (target == nullptr)
         {
-            cout << "Cannot move system directory '.trash' to trash\n";
+            cout << "File : " << targetPath << " Doesn't exist\n";
             return;
         }
-        if (!currentDir->children.contains(targetName))
+        if (target == root || target == root->children[".trash"])
         {
-            cout << "File : " << targetName << " Doesn't exist\n";
+            cout << "Cannot move system directory to trash\n";
+            return;
+        }
+        if (isAncestor(target, currentDir))
+        {
+            cout << "Cannot trash current or parent working directory\n";
             return;
         }
 
-        if (root->children[".trash"]->children.contains(targetName))
+        FileNode *trashDir = root->children[".trash"];
+        if (trashDir->children.contains(target->name))
         {
-            delete root->children[".trash"]->children[targetName];
+            delete trashDir->children[target->name];
         }
 
-        FileNode *temp = currentDir->children[targetName];
-        root->children[".trash"]->children[targetName] = temp;
-        temp->parent = root->children[".trash"];
-        currentDir->children.erase(targetName);
+        target->parent->children.erase(target->name);
+        trashDir->children[target->name] = target;
+        target->parent = trashDir;
     }
 
     void restore(string targetName)
@@ -248,50 +387,52 @@ public:
         root->children[".trash"]->children.erase(targetName);
     }
 
-    void write(string fileName, const string &text)
+    void write(string filePath, const string &text)
     {
-        if (!currentDir->children.contains(fileName))
+        FileNode *target = resolvePath(filePath);
+        if (target == nullptr)
         {
-            cout << "File : " << fileName << " Doesn't exist\n";
+            cout << "File : " << filePath << " Doesn't exist\n";
             return;
         }
-        if (currentDir->children[fileName]->isDirectory)
+        if (target->isDirectory)
         {
-            cout << fileName << " is a Directory!\n";
+            cout << filePath << " is a Directory!\n";
             return;
         }
-        currentDir->children[fileName]->content += (text + "\n");
+        target->content += (text + "\n");
     }
 
-    void empty(string fileName)
+    void empty(string filePath)
     {
-        if (!currentDir->children.contains(fileName))
+        FileNode *target = resolvePath(filePath);
+        if (target == nullptr)
         {
-            cout << "File : " << fileName << " Doesn't exist\n";
+            cout << "File : " << filePath << " Doesn't exist\n";
             return;
         }
-        if (currentDir->children[fileName]->isDirectory)
+        if (target->isDirectory)
         {
-            cout << fileName << " is a Directory!\n";
+            cout << filePath << " is a Directory!\n";
             return;
         }
-        currentDir->children[fileName]->content = "";
+        target->content = "";
     }
 
-    void cat(string fileName)
+    void cat(string filePath)
     {
-        if (!currentDir->children.contains(fileName))
+        FileNode *target = resolvePath(filePath);
+        if (target == nullptr)
         {
-            cout << "File : " << fileName << " Doesn't exist\n";
+            cout << "File : " << filePath << " Doesn't exist\n";
             return;
         }
-        if (currentDir->children[fileName]->isDirectory)
+        if (target->isDirectory)
         {
-            cout << fileName << " is a Directory!\n";
+            cout << filePath << " is a Directory!\n";
             return;
         }
-
-        cout << currentDir->children[fileName]->content << '\n';
+        cout << target->content << '\n';
     }
 
     string escapeNewlines(const string &str)
@@ -471,11 +612,11 @@ public:
 
     void clearScreen()
     {
-#ifdef _WIN32
-        system("cls");
-#else
-        system("clear");
-#endif
+        #ifdef _WIN32
+                system("cls");
+        #else
+                system("clear");
+        #endif
     }
     void grepHelper(FileNode *node, string currentPath, const string &keyword, bool &found)
     {
@@ -545,6 +686,101 @@ public:
         cout << CYAN << "                               " << RESET << "  " << BLUE << "Used Space: " << RESET << totalBytes << " Bytes\n";
         cout << "\n";
     }
+    // 1)
+    void shred(string filePath)
+    {
+        FileNode *target = resolvePath(filePath);
+        if (target == nullptr)
+        {
+            cout << "Error: File not found!!\n";
+            return;
+        }
+        if (target->isDirectory)
+        {
+            cout << "Cannot shred a directory. Use rm instead.\n";
+            return;
+        }
+        target->content.assign(target->content.length(), '#');
+        cout << "Memory Shredded successfully for: " << target->name << "\n";
+        target->parent->children.erase(target->name);
+        delete target;
+    }
+
+    void findHelper(FileNode *currentNode, string targetName, string currentPath)
+    {
+        
+        if (currentNode->name == targetName)
+        {
+            cout << "Found: " << currentPath << endl;
+        }
+        
+        for (auto const &i : currentNode->children)
+        {
+            FileNode *childNode = i.second;
+            string nextPath;
+            if (currentPath == "/")
+            {
+                nextPath = currentPath + childNode->name;
+            }
+            else
+            {
+                nextPath = currentPath + "/" + childNode->name;
+            }
+
+            if (childNode->isDirectory)
+            {
+                findHelper(childNode, targetName, nextPath);
+            }
+            else if (childNode->name == targetName)
+            {
+                cout << "Found: " << nextPath << endl;
+            }
+        }
+    }
+    // find Command 3)
+    void find(string targetName)
+    {
+        cout << "Searching Entire System For: " << targetName << "\n";
+        
+        findHelper(root, targetName, "/");
+        cout << "Search Complete." << endl;
+    }
+    int duHelper(FileNode *currentNode)
+    {
+        int totalSize = 0;
+        for (auto const &i : currentNode->children)
+        {
+            FileNode *childNode = i.second;
+            if (childNode->isDirectory)
+            {
+                totalSize += duHelper(childNode);
+            }
+            else
+            {
+                totalSize += childNode->content.length();
+            }
+        }
+
+        return totalSize;
+    }
+    void du(string targetPath)
+    {
+        FileNode *target = resolvePath(targetPath);
+        if (target == nullptr)
+        {
+            cout << "Error: Directory not found !!\n";
+            return;
+        }
+        if (target->isDirectory)
+        {
+            int finalSize = duHelper(target);
+            cout << finalSize << " Bytes " << targetPath << "\n";
+        }
+        else
+        {
+            cout << target->content.length() << " Bytes " << targetPath << "\n";
+        }
+    }
     void run()
     {
         load();
@@ -555,16 +791,16 @@ public:
             pathFinder(currentDir, currentPath);
             cout << GREEN << "user@nanofs:" << BLUE << currentPath << RESET << "$ ";
             getline(cin, input);
-
+    
             if (input.empty())
                 continue;
-
+    
             commandHistory.push_back(input);
             if (commandHistory.size() > 50)
             {
                 commandHistory.pop_front();
             }
-
+    
             if (input == "exit")
             {
                 save();
@@ -600,13 +836,13 @@ public:
                 nanofetch();
                 continue;
             }
-
+    
             size_t spacePos = input.find(' ');
             if (spacePos != string::npos)
             {
                 string cmd = input.substr(0, spacePos);
                 string arg = input.substr(spacePos + 1);
-
+    
                 if (cmd == "mkdir")
                     mkdir(arg);
                 else if (cmd == "touch")
@@ -635,8 +871,16 @@ public:
                     trash(arg);
                 else if (cmd == "restore")
                     restore(arg);
-                else if (cmd == "ls")
-                    lsWildcard(arg);
+                else if (cmd == "ls"){
+                    if (arg.find('*') != string::npos)
+                    {
+                        lsWildcard(arg);
+                    }
+                    else
+                    {
+                        ls(arg);
+                    }
+                }
                 else if (cmd == "grep")
                     grep(arg);
                 else if (cmd == "shred")
@@ -652,111 +896,6 @@ public:
             {
                 cout << "Command not recognized.\n";
             }
-        }
-    }
-    // 1)
-    void shred(string filename)
-    {
-        if (currentDir->children.find(filename) != currentDir->children.end())
-        { // if file is there
-            FileNode *target = currentDir->children[filename];
-            if (!target->isDirectory)
-            {
-
-                target->content.assign(target->content.length(), '#'); // Replaces data with "#"
-
-                cout << "Memory Shredded successfully for: " << filename << endl;
-
-                currentDir->children.erase(filename); // removal from unordered map
-                delete target;
-            }
-            else
-            {
-                cout << "Cannot shred a directory . Use rm instead.\n";
-            }
-        }
-        else
-        {
-            cout << "Error: File not found!!" << endl;
-        }
-    }
-
-    void findHelper(FileNode *currentNode, string targetName, string currentPath)
-    {
-
-        if (currentNode->name == targetName)
-        {
-            cout << "Found: " << currentPath << endl;
-        }
-
-        for (auto const &i : currentNode->children)
-        {
-            FileNode *childNode = i.second;
-            string nextPath;
-            if (currentPath == "/")
-            {
-                nextPath = currentPath + childNode->name;
-            }
-            else
-            {
-                nextPath = currentPath + "/" + childNode->name;
-            }
-
-            if (childNode->isDirectory)
-            {
-                findHelper(childNode, targetName, nextPath);
-            }
-            else if (childNode->name == targetName)
-            {
-                cout << "Found: " << nextPath << endl;
-            }
-        }
-    }
-    // find Command 3)
-    void find(string targetName)
-    {
-        cout << "Searching Entire System For: " << targetName << "\n";
-
-        findHelper(root, targetName, "/");
-        cout << "Search Complete." << endl;
-    }
-    int duHelper(FileNode *currentNode)
-    {
-        int totalSize = 0;
-        for (auto const &i : currentNode->children)
-        {
-            FileNode *childNode = i.second;
-            if (childNode->isDirectory)
-            {
-                totalSize += duHelper(childNode);
-            }
-            else
-            {
-                totalSize += childNode->content.length();
-            }
-        }
-
-        return totalSize;
-    }
-    void du(string folderName)
-    {
-        if (currentDir->children.find(folderName) != currentDir->children.end())
-        {
-            FileNode *targetFolder = currentDir->children[folderName];
-
-            if (targetFolder->isDirectory)
-            {
-                int finalSize = duHelper(targetFolder);
-                cout << finalSize << " Bytes " << folderName << endl;
-            }
-            else
-            {
-                cout << targetFolder->content.length() << " Bytes " << folderName << endl;
-            }
-        }
-        else
-        {
-            cout << "Error: Directory not found !!" << endl;
         }
     }
 };
